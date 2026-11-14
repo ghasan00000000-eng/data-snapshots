@@ -1,0 +1,43 @@
+name: daily-snapshot
+
+on:
+  schedule:
+    - cron: "17 9 * * *"      # каждый день в 09:17 UTC = 12:17 по Москве (время можно менять)
+  workflow_dispatch:           # кнопка ручного запуска во вкладке Actions
+
+permissions:
+  contents: write              # чтобы сохранять данные обратно в репозиторий
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install beautifulsoup4
+
+      - name: Take snapshot of view counters
+        run: python vpn_daily_views.py snapshot --seeds seeds.txt --data daily_views_data.jsonl
+
+      - name: Build report
+        continue-on-error: true
+        run: python vpn_daily_views.py report --data daily_views_data.jsonl --out daily_views_report.csv --min-hours 18
+
+      - name: Save data back to the repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add daily_views_data.jsonl
+          if [ -f daily_views_report.csv ]; then git add daily_views_report.csv; fi
+          if git diff --cached --quiet; then
+            echo "Нет изменений"
+          else
+            git commit -m "snapshot $(date -u +%F-%H%M)"
+            git push
+          fi
