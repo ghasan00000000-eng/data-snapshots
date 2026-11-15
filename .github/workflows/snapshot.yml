@@ -27,7 +27,7 @@ jobs:
 
       - name: Build report
         continue-on-error: true
-        run: python vpn_daily_views.py report --data daily_views_data.jsonl --out daily_views_report.csv --min-hours 18
+        run: python vpn_daily_views.py report --data daily_views_data.jsonl --out daily_views_report.csv --min-hours 12
 
       - name: Save data back to the repository
         run: |
