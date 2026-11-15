@@ -1,0 +1,90 @@
+name: find-new-channels
+
+on:
+  workflow_dispatch:                # запускается кнопкой Run workflow во вкладке Actions
+    inputs:
+      max_channels:
+        description: "Сколько каналов максимум проверить"
+        default: "150"
+
+permissions:
+  contents: write                   # чтобы сохранить результат в репозиторий
+
+concurrency:
+  group: repo-writes
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install beautifulsoup4
+
+      - name: Walk links from seeds
+        env:
+          MAX_CHANNELS: ${{ inputs.max_channels }}
+        run: python vpn_channels_web.py run --seeds seeds.txt --expand 1 --only-vpn --max-pages 3 --max-channels "${MAX_CHANNELS:-150}" --out vpn_channels_web.csv
+
+      - name: Pick new candidates
+        run: |
+          python - <<'PY'
+          import csv, os, sys
+          from vpn_channels import read_lines
+          from vpn_channels_web import seed_name
+
+          MIN_SUBS = 500   # ниже этого числа подписчиков в candidates.txt не попадают
+
+          seeds = {seed_name(l).lower() for l in read_lines("seeds.txt") if seed_name(l)}
+          if not os.path.exists("vpn_channels_web.csv"):
+              print("Обход не нашёл ни одного подходящего канала")
+              sys.exit(0)
+
+          def num(x):
+              try:
+                  return int(float(x))
+              except (TypeError, ValueError):
+                  return 0
+
+          rows = []
+          with open("vpn_channels_web.csv", encoding="utf-8-sig", newline="") as f:
+              for r in csv.DictReader(f):
+                  if r["username"].lstrip("@").lower() not in seeds:
+                      rows.append(r)
+          rows.sort(key=lambda r: (num(r["vpn_keyword_hits"]) > 0, num(r["subscribers"])), reverse=True)
+
+          cols = ["username", "title", "subscribers", "vpn_keyword_hits", "bot_link_in_about",
+                  "bots_in_posts", "found_at_depth", "about", "link"]
+          with open("candidates.csv", "w", newline="", encoding="utf-8-sig") as f:
+              w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+              w.writeheader()
+              w.writerows(rows)
+
+          strict = [r["username"] for r in rows
+                    if num(r["vpn_keyword_hits"]) > 0 and num(r["subscribers"]) >= MIN_SUBS]
+          with open("candidates.txt", "w", encoding="utf-8") as f:
+              f.write("\n".join(strict) + ("\n" if strict else ""))
+          print(f"Новых кандидатов: {len(rows)}, из них в candidates.txt: {len(strict)}")
+          PY
+
+      - name: Save result back to the repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for f in candidates.csv candidates.txt; do
+            if [ -f "$f" ]; then git add "$f"; fi
+          done
+          if git diff --cached --quiet; then
+            echo "Нет изменений"
+          else
+            git commit -m "candidates $(date -u +%F-%H%M)"
+            git pull --rebase origin main
+            git push
+          fi
